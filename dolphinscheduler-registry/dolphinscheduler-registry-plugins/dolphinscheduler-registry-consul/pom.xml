@@ -33,11 +33,15 @@
             <scope>test</scope>
         </dependency>
 
+<!--        <dependency>-->
+<!--            <groupId>com.orbitz.consul</groupId>-->
+<!--            <artifactId>consul-client</artifactId>-->
+<!--        </dependency>-->
         <dependency>
-            <groupId>com.orbitz.consul</groupId>
-            <artifactId>consul-client</artifactId>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-consul-client</artifactId>
+            <version>4.5.8</version>
         </dependency>
-
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -50,4 +54,33 @@
         </dependency>
 
     </dependencies>
+
+    <repositories>
+
+
+        <repository>
+            <id>alibaba</id>
+            <url>https://maven.aliyun.com/nexus/content/groups/public/</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>ly</id>
+            <url>https://nexus.17usoft.com/repository/mvn-all/</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+
+
+    </repositories>
+
+
 </project>

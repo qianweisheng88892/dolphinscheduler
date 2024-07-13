@@ -6,11 +6,15 @@ import org.apache.dolphinscheduler.registry.api.SubscribeListener;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
-import com.orbitz.consul.cache.ConsulCache;
-import com.orbitz.consul.model.kv.Value;
 
-public class ConsulSubscribeDataListener implements ConsulCache.Listener<String, Value> {
+import io.vertx.core.Handler;
+import io.vertx.ext.consul.KeyValue;
+import io.vertx.ext.consul.KeyValueList;
+import io.vertx.ext.consul.WatchResult;
+
+public class ConsulSubscribeDataListener implements Handler<WatchResult<KeyValueList>> {
 
     private final SubscribeListener listener;
 
@@ -18,19 +22,22 @@ public class ConsulSubscribeDataListener implements ConsulCache.Listener<String,
         this.listener = listener;
     }
 
-    Map<String, Value> lastValues = null;
+    Map<String, KeyValue> lastValues = null;
+
 
     @Override
-    public void notify(Map<String, Value> newValues) {
+    public void handle(WatchResult<KeyValueList> kvList) {
+        KeyValueList keyValueList = kvList.nextResult();
+        Map<String, KeyValue> newValues = keyValueList.getList().stream().collect(Collectors.toMap(KeyValue::getKey, i -> i));
         if (lastValues == null) {
             lastValues = newValues;
         } else {
-            List<Value> addedData = new ArrayList<>();
-            List<Value> deletedData = new ArrayList<>();
-            List<Value> updatedData = new ArrayList<>();
-            for (Map.Entry<String, Value> entry : newValues.entrySet()) {
-                Value newData = entry.getValue();
-                Value oldData = lastValues.get(entry.getKey());
+            List<KeyValue> addedData = new ArrayList<>();
+            List<KeyValue> deletedData = new ArrayList<>();
+            List<KeyValue> updatedData = new ArrayList<>();
+            for (Map.Entry<String, KeyValue> entry : newValues.entrySet()) {
+                KeyValue newData = entry.getValue();
+                KeyValue oldData = lastValues.get(entry.getKey());
                 if (oldData == null) {
                     addedData.add(newData);
                 } else {
@@ -39,7 +46,7 @@ public class ConsulSubscribeDataListener implements ConsulCache.Listener<String,
                     }
                 }
             }
-            for (Map.Entry<String, Value> entry : lastValues.entrySet()) {
+            for (Map.Entry<String, KeyValue> entry : lastValues.entrySet()) {
                 if (!newValues.containsKey(entry.getKey())) {
                     deletedData.add(entry.getValue());
                 }
@@ -52,10 +59,11 @@ public class ConsulSubscribeDataListener implements ConsulCache.Listener<String,
         }
     }
 
-    private void triggerListener(List<Value> list, SubscribeListener listener, Event.Type type) {
-        for (Value val : list) {
-            listener.notify(new Event(val.getKey(), val.getKey(), val.getValueAsString().orElse(""), type));
+    private void triggerListener(List<KeyValue> list, SubscribeListener listener, Event.Type type) {
+        for (KeyValue val : list) {
+            listener.notify(new Event(val.getKey(), val.getKey(), val.getValue(), type));
         }
     }
+
 
 }

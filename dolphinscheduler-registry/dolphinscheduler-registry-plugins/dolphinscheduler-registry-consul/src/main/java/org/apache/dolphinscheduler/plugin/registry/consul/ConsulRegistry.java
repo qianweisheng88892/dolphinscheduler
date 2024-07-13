@@ -32,32 +32,44 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Collectors;
+
+import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
+import io.vertx.core.Handler;
+import io.vertx.core.VertxOptions;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.consul.ConsulClient;
+import io.vertx.ext.consul.*;
+import io.vertx.core.Vertx;
 
 import lombok.NonNull;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.orbitz.consul.Consul;
-import com.orbitz.consul.SessionClient;
-import com.orbitz.consul.cache.KVCache;
-import com.orbitz.consul.model.kv.Value;
-import com.orbitz.consul.model.session.ImmutableSession;
-import com.orbitz.consul.option.ImmutablePutOptions;
-import com.orbitz.consul.option.PutOptions;
+//import com.orbitz.consul.Consul;
+//import com.orbitz.consul.SessionClient;
+//import com.orbitz.consul.cache.KVCache;
+//import com.orbitz.consul.model.kv.Value;
+//import com.orbitz.consul.model.session.ImmutableSession;
+//import com.orbitz.consul.option.ImmutablePutOptions;
+//import com.orbitz.consul.option.PutOptions;
 
 public final class ConsulRegistry implements Registry {
 
     private static final Logger log = LoggerFactory.getLogger(ConsulRegistry.class);
-    private final Consul consulClient;
-    private final Map<String, KVCache> kvCacheMap = new ConcurrentHashMap<>();
+    private final ConsulClient consulClient;
+    private final Vertx vertx;
+    private final Map<String, Watch> kvCacheMap = new ConcurrentHashMap<>();
     Map<String, String> lockMap = new HashMap<>();
     private final ExecutorService executorService = Executors.newCachedThreadPool();
-    private final SessionClient sessionClient;
     private String sessionId;
     private final String namespace;
     private final ConsulConnectionStateListener consulConnectionStateListener;
@@ -73,27 +85,26 @@ public final class ConsulRegistry implements Registry {
 
     public ConsulRegistry(ConsulRegistryProperties prop) {
         String url = prop.getUrl();
-        String sessionTimeout = formatDuration(prop.getSessionTimeout());
+        Duration sessionTimeout = prop.getSessionTimeout();
         Duration sessionRefreshTime = prop.getSessionTimeout();
         String namespace = prop.getNamespace();
         String userName = prop.getUserName();
         String password = prop.getPassword();
         String aclToken = prop.getAclToken();
 
-        Consul.Builder builder = Consul.builder();
-        builder.withUrl(url);
-        if (StringUtils.isNoneBlank(userName)) {
-            builder.withBasicAuth(userName, password);
-        }
+        ConsulClientOptions op = new ConsulClientOptions();
+        op.setHost(url);
         if (StringUtils.isNoneBlank(aclToken)) {
-            builder.withAclToken(aclToken);
+            op.setAclToken(aclToken);
         }
-        this.consulClient = builder.build();
-        this.sessionClient = consulClient.sessionClient();
+        VertxOptions vertxOptions = new VertxOptions();
+        this.vertx = Vertx.vertx(vertxOptions);
+        this.consulClient = ConsulClient.create(vertx, op);
+
         this.consulConnectionStateListener = new ConsulConnectionStateListener(consulClient);
         this.namespace = namespace;
-        consulConnectionStateListener.start();
-        createConsulSession(sessionTimeout);
+//        consulConnectionStateListener.start();
+        createConsulSession(sessionTimeout.getSeconds());
         startSessionRenewal(sessionRefreshTime);
     }
 
@@ -104,36 +115,63 @@ public final class ConsulRegistry implements Registry {
         executorService.submit(() -> {
             while (true) {
                 try {
-                    consulClient.sessionClient().renewSession(sessionId);
-                    Thread.sleep(sessionRefreshTime.toMillis());
+                    consulClient.renewSession(sessionId);
                 } catch (Exception e) {
                     e.printStackTrace();
+                } finally {
+                    Thread.sleep(sessionRefreshTime.toMillis());
                 }
             }
         });
     }
+
+
 
     @Override
     public void start() {
         // The start has been set in the constructor
     }
 
-    private void createConsulSession(String sessionTimeout) {
+    public <T> T dealwith(Future<T> future,String errorMessage){
+        AtomicReference<T> res = new AtomicReference<>();
+        future.onComplete(re -> {
+            if(re.succeeded()){
+                res.set(re.result());
+            }else {
+              throw new RegistryException(errorMessage,re.cause());
+            }
+        }).result();
+        return res.get();
+    }
+
+
+    private void createConsulSession(long sessionTimeout) {
+        SessionOptions sessionOptions = new SessionOptions()
+                .setName("consul_registry_session")
+                .setLockDelay(15000)
+                .setTtl(sessionTimeout)
+                .setBehavior(SessionBehavior.DELETE);
         try {
-            sessionId = sessionClient.createSession(ImmutableSession.builder().name("consul_registry_session")
-                    .lockDelay("15s").ttl(sessionTimeout).behavior("delete").build()).getId();
-        } catch (Exception e) {
+            Future<String> sessionWithOptions = consulClient.createSessionWithOptions(sessionOptions);
+            sessionId = dealwith(sessionWithOptions,"Failed to create Consul session");
+        }catch (RegistryException e){
+            throw e;
+        }catch (Exception e) {
             throw new RegistryException("Failed to create Consul session", e);
         }
     }
 
+
     @Override
     public boolean isConnected() {
         try {
-            consulClient.agentClient().ping();
+            Future<JsonObject> future = consulClient.agentInfo();
+            dealwith(future,"Failed to check connection status");
             return true;
+        }catch (RegistryException e){
+            throw e;
         } catch (Exception e) {
-            return false;
+            throw new RegistryException("Failed to check connection status", e);
         }
     }
 
@@ -157,10 +195,11 @@ public final class ConsulRegistry implements Registry {
     public void subscribe(String path, SubscribeListener listener) {
         path = apNameSpace(path);
 
-        KVCache kvCache = KVCache.newCache(consulClient.keyValueClient(), path, 2);
-        kvCache.addListener(new ConsulSubscribeDataListener(new MidSubscriveListener(listener)));
-        kvCacheMap.put(path, kvCache);
-        kvCache.start();
+        Watch<KeyValueList> watch = Watch.keyPrefix(path, vertx);
+        watch.setHandler(new ConsulSubscribeDataListener(new MidSubscriveListener(listener)));
+        watch.start();
+        kvCacheMap.put(path, watch);
+        watch.start();
     }
 
     public class MidSubscriveListener implements SubscribeListener {
@@ -197,9 +236,14 @@ public final class ConsulRegistry implements Registry {
     public String get(String key) throws RegistryException {
         key = apNameSpace(key);
         try {
-            Optional<Value> value = consulClient.keyValueClient().getValue(key);
-            return value.orElseThrow(() -> new RegistryException("Key not found")).getValueAsString()
-                    .orElseThrow(() -> new RegistryException("Value not found"));
+            Future<KeyValue> future = consulClient.getValue(key);
+            KeyValue res = dealwith(future, "Failed to get value for key" + key);
+            if(res.getValue() == null){
+                throw new RegistryException("key: " + key + " not exist");
+            }
+            return res.getValue();
+        } catch (RegistryException e) {
+            throw e;
         } catch (Exception e) {
             throw new RegistryException("Error getting value for key: " + key, e);
         }
@@ -209,12 +253,14 @@ public final class ConsulRegistry implements Registry {
     public void put(String key, String value, boolean deleteOnDisconnect) {
         try {
             key = apNameSpace(key);
+            KeyValueOptions op = new KeyValueOptions();
             if (deleteOnDisconnect) {
-                PutOptions build = ImmutablePutOptions.builder().acquire(sessionId).build();
-                consulClient.keyValueClient().putValue(key, value, 0, build);
-            } else {
-                consulClient.keyValueClient().putValue(key, value);
+                op.setAcquireSession(sessionId);
             }
+            Future<Boolean> future = consulClient.putValueWithOptions(key, value, op);
+            dealwith(future, "Failed to put key" + key);
+        } catch (RegistryException e) {
+            throw e;
         } catch (Exception e) {
             throw new RegistryException("Error putting key: " + key, e);
         }
@@ -223,8 +269,10 @@ public final class ConsulRegistry implements Registry {
     @Override
     public void delete(String key) {
         key = apNameSpace(key);
+
         try {
-            consulClient.keyValueClient().deleteKey(key);
+            Future<Void> future = consulClient.deleteValue(key);
+            dealwith(future, "Failed to delete key" + key);
         } catch (Exception e) {
             throw new RegistryException("Error deleting key: " + key, e);
         }
@@ -236,9 +284,9 @@ public final class ConsulRegistry implements Registry {
             key = apNameSpace(key);
 
             String prefix = key.endsWith(FOLDER_SEPARATOR) ? key : key + FOLDER_SEPARATOR;
-            List<String> keys = consulClient.keyValueClient().getKeys(prefix);
+            Future<List<String>> future = consulClient.getKeys(prefix);
+            List<String> keys = dealwith(future, "Failed to get children for key:" + key);
             return keys.stream().map(e -> getSubNodeKeyName(prefix, e)).distinct().collect(Collectors.toList());
-
         } catch (Exception e) {
             throw new RegistryException("Error getting children for key: " + key, e);
         }
@@ -258,7 +306,9 @@ public final class ConsulRegistry implements Registry {
     public boolean exists(String key) {
         try {
             key = apNameSpace(key);
-            return consulClient.keyValueClient().getValue(key).isPresent();
+            Future<KeyValue> future = consulClient.getValue(key);
+            KeyValue res = dealwith(future, "Failed check existence for key: " + key);
+            return res.getValue()!=null;
         } catch (Exception e) {
             throw new RegistryException("Error checking existence for key: " + key, e);
         }
@@ -279,11 +329,12 @@ public final class ConsulRegistry implements Registry {
             if (lockMap.containsKey(key)) {
                 return lockMap.get(key).equals(LockUtils.getLockOwner());
             }
-            boolean b = consulClient.keyValueClient().acquireLock(key, sessionId);
-            if (b) {
+            Future<Boolean> put = consulClient.putValueWithOptions(key, "", new KeyValueOptions().setAcquireSession(sessionId));
+            Boolean res = dealwith(put, "Failed to lock key: " + key);
+            if (res) {
                 lockMap.put(key, LockUtils.getLockOwner());
             }
-            return b;
+            return res;
         }
     }
 
@@ -308,7 +359,11 @@ public final class ConsulRegistry implements Registry {
     public boolean releaseLock(String key) {
         try {
             key = apNameSpace(key);
-            consulClient.keyValueClient().releaseLock(key, sessionId);
+            if(!lockMap.containsKey(key) || !lockMap.get(key).equals(LockUtils.getLockOwner())){
+                return false;
+            }
+            Future<Void> future = consulClient.deleteValue(key);
+            dealwith(future, "Failed to release lock key: " + key);
             lockMap.remove(key);
             return true;
         } catch (Exception e) {
@@ -318,27 +373,73 @@ public final class ConsulRegistry implements Registry {
 
     @Override
     public void close() {
-        kvCacheMap.values().forEach(KVCache::stop);
+        kvCacheMap.values().forEach(Watch::stop);
         destorySession();
-        consulClient.destroy();
+        consulClient.close();
         consulConnectionStateListener.close();
     }
 
     public void destorySession() {
-        sessionClient.destroySession(sessionId);
+        Future<Void> future = consulClient.destroySession(sessionId);
+        dealwith(future, "Failed to destory session");
     }
 
-    public static String formatDuration(Duration duration) {
-        long seconds = duration.getSeconds();
-        long absSeconds = Math.abs(seconds);
 
-        if (absSeconds % 3600 == 0) {
-            return String.format("%dh", absSeconds / 3600);
-        } else if (absSeconds % 60 == 0) {
-            return String.format("%dm", absSeconds / 60);
-        } else {
-            return String.format("%ds", absSeconds);
-        }
+
+    public static void main(String[] args) throws InterruptedException {
+        ConsulRegistryProperties prop = new ConsulRegistryProperties();
+        prop.setUrl("http://127.0.0.1:8500");
+        prop.setNamespace("test");
+        ConsulRegistry consulRegistry = new ConsulRegistry(prop);
+        consulRegistry.start();
+//        for (int i = 0; i < 2; i++) {
+//            new Thread(){
+//                @Override
+//                public void run() {
+//                    boolean a = consulRegistry.acquireLock("t");
+//                    try {
+//                        Thread.sleep(15000);
+//                    } catch (InterruptedException e) {
+//                        throw new RuntimeException(e);
+//                    }
+//                    boolean b = consulRegistry.acquireLock("t");
+//                    System.out.println("a="+a+" b="+b);
+//                }
+//            }.start();
+//        }
+
+
+//        consulRegistry.put("b/1","测试1",false);
+//        Thread.sleep(3000);
+////
+//        consulRegistry.put("x/1","测试3",true);
+
+
+//        consulRegistry.put("b/2","测试3",false);
+//        consulRegistry.put("b/2/1","测试3",false);
+
+//        Collection<String> b = consulRegistry.children("b");
+
+//        Thread.sleep(3000);
+//        consulRegistry.subscribe("b", event -> System.out.println("变更-"+event));
+//        Thread.sleep(3000);
+//        consulRegistry.put("b/3","测试5",false);
+//        Thread.sleep(3000);
+//        consulRegistry.unsubscribe("b");
+//        Thread.sleep(3000);
+//        consulRegistry.delete("b/1");
+
+//        consulRegistry.unsubscribe("b");
+
+//        consulRegistry.delete("b");
+
+//        Thread.sleep(3000);
+//        System.out.println("删除session前-"+consulRegistry.get("x/1"));
+////      consulRegistry.sessionClient.destroySession(consulRegistry.sessionId);
+//        System.out.println("删除session后-"+consulRegistry.get("x/1"));
+
+        LockSupport.park();
+
     }
 
 }

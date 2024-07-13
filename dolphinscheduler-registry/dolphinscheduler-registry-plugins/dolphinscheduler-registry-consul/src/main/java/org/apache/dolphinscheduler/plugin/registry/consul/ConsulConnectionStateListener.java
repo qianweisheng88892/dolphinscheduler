@@ -28,7 +28,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.orbitz.consul.Consul;
+
+import io.vertx.core.Future;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.consul.ConsulClient;
+
 
 public class ConsulConnectionStateListener implements AutoCloseable {
 
@@ -36,11 +40,11 @@ public class ConsulConnectionStateListener implements AutoCloseable {
     // A thread pool that periodically obtains connection status
     private final ScheduledExecutorService scheduledExecutorService;
     // monitored client
-    private final Consul consulClient;
+    private final ConsulClient consulClient;
     // The state of the last monitor
     private volatile ConnectionState connectionState;
 
-    public ConsulConnectionStateListener(Consul consulClient) {
+    public ConsulConnectionStateListener(ConsulClient consulClient) {
         this.consulClient = consulClient;
         this.scheduledExecutorService = Executors.newScheduledThreadPool(
                 1,
@@ -65,7 +69,8 @@ public class ConsulConnectionStateListener implements AutoCloseable {
      */
     private ConnectionState currentConnectivityState() {
         try {
-            consulClient.agentClient().ping();
+            Future<JsonObject> res = consulClient.agentInfo();
+            res.result();
             return ConnectionState.CONNECTED;
         } catch (Exception e) {
             return ConnectionState.DISCONNECTED;
