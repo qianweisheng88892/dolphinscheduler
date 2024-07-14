@@ -32,6 +32,7 @@
         <module>dolphinscheduler-registry-zookeeper</module>
         <module>dolphinscheduler-registry-jdbc</module>
         <module>dolphinscheduler-registry-etcd</module>
+        <module>dolphinscheduler-registry-consul</module>
         <module>dolphinscheduler-registry-it</module>
     </modules>
 </project>

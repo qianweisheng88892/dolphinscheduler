@@ -20,32 +20,54 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>org.apache.dolphinscheduler</groupId>
-        <artifactId>dolphinscheduler-registry</artifactId>
+        <artifactId>dolphinscheduler-registry-plugins</artifactId>
         <version>dev-SNAPSHOT</version>
     </parent>
 
-    <artifactId>dolphinscheduler-registry-all</artifactId>
+    <artifactId>dolphinscheduler-registry-consul</artifactId>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.dolphinscheduler</groupId>
+                <artifactId>dolphinscheduler-bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
             <groupId>org.apache.dolphinscheduler</groupId>
-            <artifactId>dolphinscheduler-registry-zookeeper</artifactId>
-            <version>${project.version}</version>
+            <artifactId>dolphinscheduler-registry-api</artifactId>
         </dependency>
+
         <dependency>
             <groupId>org.apache.dolphinscheduler</groupId>
-            <artifactId>dolphinscheduler-registry-jdbc</artifactId>
+            <artifactId>dolphinscheduler-registry-it</artifactId>
             <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
         </dependency>
+
         <dependency>
-            <groupId>org.apache.dolphinscheduler</groupId>
-            <artifactId>dolphinscheduler-registry-etcd</artifactId>
-            <version>${project.version}</version>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
         </dependency>
+
+
         <dependency>
-            <groupId>org.apache.dolphinscheduler</groupId>
-            <artifactId>dolphinscheduler-registry-consul</artifactId>
-            <version>${project.version}</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.orbitz.consul</groupId>
+            <artifactId>consul-client</artifactId>
+            <version>1.5.3</version>
         </dependency>
     </dependencies>
 </project>
